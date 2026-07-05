@@ -13,7 +13,6 @@ import streamlit as st
 from model import (
     ANNOTATION_COLUMNS,
     CLASSIFICATION_COLUMN,
-    DEFAULT_CSV,
     DEFAULT_TARGETS,
     FEATURE_COLUMNS,
     HIGH_VALUE_MARKER,
@@ -46,52 +45,66 @@ def _load_model_from_upload(uploaded_file) -> ReactionSurrogateModel:
     return _load_model_from_dataframe(df)
 
 
+def _handle_csv_upload(uploaded_file) -> None:
+    """Load an uploaded CSV and refresh session state."""
+    upload_key = f"{uploaded_file.name}_{uploaded_file.size}"
+    if st.session_state.get("loaded_upload_key") == upload_key:
+        return
+
+    try:
+        st.session_state.model = _load_model_from_upload(uploaded_file)
+        st.session_state.loaded_upload_key = upload_key
+        st.session_state.last_recommendation = None
+        st.session_state.last_optimization_meta = None
+        st.rerun()
+    except Exception as exc:
+        st.error(f"Não foi possível carregar o CSV: {exc}")
+
+
 def _init_session_state() -> None:
     if "model" not in st.session_state:
         st.session_state.model = None
-        st.session_state.dataset_load_error = None
+        st.session_state.loaded_upload_key = None
         try:
             model = ReactionSurrogateModel()
             model.load_csv()
             model.fit()
             st.session_state.model = model
         except FileNotFoundError:
-            st.session_state.dataset_load_error = (
-                f"Default dataset not found at `{DEFAULT_CSV}`. "
-                "Please upload a CSV file using the sidebar."
-            )
+            logger.info("Default CSV not found; waiting for user upload.")
         except Exception as exc:
-            st.session_state.dataset_load_error = (
-                f"Unable to load default dataset: {exc}"
-            )
+            logger.warning("Unable to load default dataset: %s", exc)
 
     for key in ("last_recommendation", "last_optimization_meta"):
         if key not in st.session_state:
             st.session_state[key] = None
 
 
+def _render_csv_uploader(*, label: str, key: str) -> None:
+    uploaded = st.file_uploader(
+        label,
+        type=["csv"],
+        key=key,
+        help="Arquivo com as 21 colunas de formulações (Material, features, targets).",
+    )
+    if uploaded is not None:
+        _handle_csv_upload(uploaded)
+
+
 def _render_sidebar_dataset_controls() -> None:
     st.header("Dataset")
 
-    if st.session_state.dataset_load_error:
-        st.warning(st.session_state.dataset_load_error)
-
-    uploaded = st.file_uploader(
-        "Upload CSV",
-        type=["csv"],
-        help="Required when the default file is not available on disk.",
-    )
-    if uploaded is not None:
-        if st.button("Load uploaded CSV", use_container_width=True):
-            try:
-                st.session_state.model = _load_model_from_upload(uploaded)
-                st.session_state.dataset_load_error = None
-                st.session_state.last_recommendation = None
-                st.session_state.last_optimization_meta = None
-                st.success("Dataset loaded and models trained.")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Failed to load CSV: {exc}")
+    if st.session_state.model is None:
+        st.info(
+            "Nenhum arquivo de dados encontrado. "
+            "Carregue a planilha CSV abaixo para iniciar."
+        )
+        _render_csv_uploader(label="Carregar CSV", key="sidebar_csv_uploader")
+    else:
+        _render_csv_uploader(
+            label="Substituir CSV",
+            key="sidebar_csv_replace_uploader",
+        )
 
     if st.session_state.model is not None:
         st.divider()
@@ -108,18 +121,30 @@ def _render_sidebar_dataset_controls() -> None:
 
 
 def _render_missing_dataset_view() -> None:
-    st.info(
-        "No dataset is loaded. Upload a formulation CSV in the sidebar to begin."
+    st.warning(
+        "Para utilizar a aplicação, é necessário carregar a planilha de formulações."
     )
     st.markdown(
         """
-        **Expected CSV format**
-        - Columns: Material, Característica, 16 formulation features,
-          Viscosidade, Escoamento, Suspensao
-        - Numeric feature values (0 = not used)
-        - Suspensao: SIM or NÃO
+        Selecione o arquivo **CSV** com os experimentos já realizados.
+        Após o carregamento, os modelos serão treinados automaticamente.
         """
     )
+    _render_csv_uploader(label="Carregar planilha CSV", key="main_csv_uploader")
+
+    with st.expander("Formato esperado do CSV"):
+        st.markdown(
+            """
+            - **Anotações:** Material, Característica
+            - **Features (16):** Propilenoglicol, Glicerina, Polietilenoglicol,
+              Metilparabeno, Sorprophor, Geropon DA, Antarox, Rodasurf,
+              Geropon SDS, H2O, Imidacloprida, Amido, Goma xantana,
+              Alginato, Carvão At, Biochar
+            - **Targets:** Viscosidade, Escoamento
+            - **Classificação:** Suspensao (`SIM` ou `NÃO`)
+            - Valores das features ≥ 0 (zero = insumo não utilizado)
+            """
+        )
 
 
 # ── Diagnostic plots ───────────────────────────────────────────────────
