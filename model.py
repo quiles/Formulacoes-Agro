@@ -27,7 +27,7 @@ from sklearn.preprocessing import StandardScaler
 logger = logging.getLogger(__name__)
 
 # ── Fixed column schema ────────────────────────────────────────────────────
-ANNOTATION_COLUMNS = ("Material", "Característica")
+ANNOTATION_COLUMNS = ("Material", "Caracteristica")
 
 FEATURE_COLUMNS = (
     "Propilenoglicol",
