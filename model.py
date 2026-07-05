@@ -11,7 +11,9 @@ import pandas as pd
 from sklearn.gaussian_process import GaussianProcessClassifier, GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import (
     ConstantKernel,
+    DotProduct,
     Matern,
+    RationalQuadratic,
     RBF,
     WhiteKernel,
 )
@@ -27,7 +29,10 @@ from sklearn.preprocessing import StandardScaler
 logger = logging.getLogger(__name__)
 
 # ── Fixed column schema ────────────────────────────────────────────────────
-ANNOTATION_COLUMNS = ("Material", "Caracteristica")
+ANNOTATION_COLUMNS = ("Material", "Característica")
+
+# Alternate spellings accepted on CSV import
+COLUMN_ALIASES = {"Caracteristica": "Característica"}
 
 FEATURE_COLUMNS = (
     "Propilenoglicol",
@@ -61,14 +66,62 @@ ALL_COLUMNS = (
 
 HIGH_VALUE_MARKER = -1
 
+DECIMAL_PLACES = 2
+
+NUMERIC_STORAGE_COLUMNS = FEATURE_COLUMNS + TARGET_COLUMNS
+
 DEFAULT_TARGETS = {"Viscosidade": 233.88, "Escoamento": 0.2}
 
 DEFAULT_CSV = Path(__file__).parent / "data" / "Formulacoes.csv"
+
+DEFAULT_GPR_KERNEL = "matern"
+DEFAULT_GPC_KERNEL = "rbf"
+
+KERNEL_OPTIONS: dict[str, str] = {
+    "matern": "Matérn (ν=2.5) — default GPR",
+    "rbf": "RBF (Gaussian) — default GPC",
+    "linear": "Linear (DotProduct)",
+    "matern15": "Matérn (ν=1.5)",
+    "matern05": "Matérn (ν=0.5)",
+    "rational_quadratic": "Rational Quadratic",
+}
+
+
+def _build_base_kernel(kernel_type: str):
+    """Build a base kernel (without ConstantKernel or WhiteKernel)."""
+    kt = kernel_type.lower()
+    if kt == "rbf":
+        return RBF(length_scale=1.0)
+    if kt == "matern":
+        return Matern(length_scale=1.0, nu=2.5)
+    if kt == "matern15":
+        return Matern(length_scale=1.0, nu=1.5)
+    if kt == "matern05":
+        return Matern(length_scale=1.0, nu=0.5)
+    if kt == "linear":
+        return DotProduct(sigma_0=1.0)
+    if kt == "rational_quadratic":
+        return RationalQuadratic(length_scale=1.0, alpha=1.0)
+    supported = ", ".join(sorted(KERNEL_OPTIONS))
+    raise ValueError(f"Unsupported kernel '{kernel_type}'. Choose from: {supported}.")
 
 
 def _normalize_suspension(series: pd.Series) -> pd.Series:
     """Map mixed-case Suspensão values to canonical SIM / NÃO."""
     return series.str.strip().str.upper().replace({"NAO": "NÃO"})
+
+
+def _round_numeric_storage(df: pd.DataFrame) -> pd.DataFrame:
+    """Round feature and target columns to the configured decimal precision."""
+    rounded = df.copy()
+    for col in NUMERIC_STORAGE_COLUMNS:
+        if col not in rounded.columns:
+            continue
+        values = pd.to_numeric(rounded[col], errors="coerce")
+        mask = values.notna()
+        if mask.any():
+            rounded.loc[mask, col] = values.loc[mask].round(DECIMAL_PLACES)
+    return rounded
 
 
 class ReactionSurrogateModel:
@@ -84,11 +137,15 @@ class ReactionSurrogateModel:
 
     def __init__(
         self,
-        kernel_type: str = "matern",
+        gpr_kernel_type: str = DEFAULT_GPR_KERNEL,
+        gpc_kernel_type: str = DEFAULT_GPC_KERNEL,
         noise_level: float = 1e-3,
         random_state: int = 42,
     ) -> None:
-        self.kernel_type = kernel_type.lower()
+        self.gpr_kernel_type = gpr_kernel_type.lower()
+        self.gpc_kernel_type = gpc_kernel_type.lower()
+        _build_base_kernel(self.gpr_kernel_type)
+        _build_base_kernel(self.gpc_kernel_type)
         self.noise_level = noise_level
         self.random_state = random_state
 
@@ -145,6 +202,7 @@ class ReactionSurrogateModel:
         return self._ingest(df)
 
     def _ingest(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.rename(columns=COLUMN_ALIASES)
         missing_cols = set(ALL_COLUMNS) - set(df.columns)
         if missing_cols:
             raise ValueError(f"Missing columns: {sorted(missing_cols)}")
@@ -196,21 +254,28 @@ class ReactionSurrogateModel:
 
     # ── Kernel builders ─────────────────────────────────────────────────
     def _build_gpr_kernel(self):
-        if self.kernel_type == "rbf":
-            base = RBF(length_scale=1.0)
-        elif self.kernel_type == "matern":
-            base = Matern(length_scale=1.0, nu=2.5)
-        else:
-            raise ValueError(
-                f"Unsupported kernel: '{self.kernel_type}'. Use 'matern' or 'rbf'."
-            )
+        base = _build_base_kernel(self.gpr_kernel_type)
         return ConstantKernel(1.0, (1e-3, 1e3)) * base + WhiteKernel(
             noise_level=self.noise_level, noise_level_bounds=(1e-6, 1e1)
         )
 
-    @staticmethod
-    def _build_gpc_kernel():
-        return ConstantKernel(1.0, (1e-2, 1e2)) * RBF(length_scale=1.0)
+    def _build_gpc_kernel(self):
+        base = _build_base_kernel(self.gpc_kernel_type)
+        return ConstantKernel(1.0, (1e-2, 1e2)) * base
+
+    def set_kernels(
+        self,
+        gpr_kernel_type: Optional[str] = None,
+        gpc_kernel_type: Optional[str] = None,
+    ) -> ReactionSurrogateModel:
+        """Update kernel types (validated but does not retrain)."""
+        if gpr_kernel_type is not None:
+            self.gpr_kernel_type = gpr_kernel_type.lower()
+            _build_base_kernel(self.gpr_kernel_type)
+        if gpc_kernel_type is not None:
+            self.gpc_kernel_type = gpc_kernel_type.lower()
+            _build_base_kernel(self.gpc_kernel_type)
+        return self
 
     def _create_gpr(self, random_state: int) -> GaussianProcessRegressor:
         return GaussianProcessRegressor(
@@ -448,7 +513,12 @@ class ReactionSurrogateModel:
         if missing_cols:
             raise ValueError(f"New row is missing columns: {sorted(missing_cols)}")
 
-        updated = pd.concat([self._full_df, new_row], ignore_index=True)
+        new_rows = new_row.loc[:, list(ALL_COLUMNS)]
+        if new_rows.isna().any().any():
+            raise ValueError("New rows contain missing values.")
+
+        new_rows = _round_numeric_storage(new_rows)
+        updated = pd.concat([self._full_df, new_rows], ignore_index=True)
         self._ingest(updated)
         return self.fit()
 
