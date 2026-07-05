@@ -63,7 +63,7 @@ HIGH_VALUE_MARKER = -1
 
 DEFAULT_TARGETS = {"Viscosidade": 233.88, "Escoamento": 0.2}
 
-DEFAULT_CSV = Path(__file__).parent / "Formulacoes.csv"
+DEFAULT_CSV = Path(__file__).parent / "data" / "Formulacoes.csv"
 
 
 def _normalize_suspension(series: pd.Series) -> pd.Series:

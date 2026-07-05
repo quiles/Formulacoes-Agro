@@ -13,6 +13,7 @@ import streamlit as st
 from model import (
     ANNOTATION_COLUMNS,
     CLASSIFICATION_COLUMN,
+    DEFAULT_CSV,
     DEFAULT_TARGETS,
     FEATURE_COLUMNS,
     HIGH_VALUE_MARKER,
@@ -32,15 +33,93 @@ st.set_page_config(
 
 
 # ── Session state ───────────────────────────────────────────────────────
+def _load_model_from_dataframe(df: pd.DataFrame) -> ReactionSurrogateModel:
+    model = ReactionSurrogateModel()
+    model._ingest(df)
+    model.fit()
+    return model
+
+
+def _load_model_from_upload(uploaded_file) -> ReactionSurrogateModel:
+    content = uploaded_file.getvalue()
+    df = pd.read_csv(io.BytesIO(content), encoding="utf-8-sig")
+    return _load_model_from_dataframe(df)
+
+
 def _init_session_state() -> None:
     if "model" not in st.session_state:
-        model = ReactionSurrogateModel()
-        model.load_csv()
-        model.fit()
-        st.session_state.model = model
+        st.session_state.model = None
+        st.session_state.dataset_load_error = None
+        try:
+            model = ReactionSurrogateModel()
+            model.load_csv()
+            model.fit()
+            st.session_state.model = model
+        except FileNotFoundError:
+            st.session_state.dataset_load_error = (
+                f"Default dataset not found at `{DEFAULT_CSV}`. "
+                "Please upload a CSV file using the sidebar."
+            )
+        except Exception as exc:
+            st.session_state.dataset_load_error = (
+                f"Unable to load default dataset: {exc}"
+            )
+
     for key in ("last_recommendation", "last_optimization_meta"):
         if key not in st.session_state:
             st.session_state[key] = None
+
+
+def _render_sidebar_dataset_controls() -> None:
+    st.header("Dataset")
+
+    if st.session_state.dataset_load_error:
+        st.warning(st.session_state.dataset_load_error)
+
+    uploaded = st.file_uploader(
+        "Upload CSV",
+        type=["csv"],
+        help="Required when the default file is not available on disk.",
+    )
+    if uploaded is not None:
+        if st.button("Load uploaded CSV", use_container_width=True):
+            try:
+                st.session_state.model = _load_model_from_upload(uploaded)
+                st.session_state.dataset_load_error = None
+                st.session_state.last_recommendation = None
+                st.session_state.last_optimization_meta = None
+                st.success("Dataset loaded and models trained.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Failed to load CSV: {exc}")
+
+    if st.session_state.model is not None:
+        st.divider()
+        df = st.session_state.model.to_dataframe()
+        csv_buffer = io.BytesIO()
+        df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+        st.download_button(
+            label="Download current dataset",
+            data=csv_buffer.getvalue(),
+            file_name="Formulacoes_updated.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+
+def _render_missing_dataset_view() -> None:
+    st.info(
+        "No dataset is loaded. Upload a formulation CSV in the sidebar to begin."
+    )
+    st.markdown(
+        """
+        **Expected CSV format**
+        - Columns: Material, Característica, 16 formulation features,
+          Viscosidade, Escoamento, Suspensao
+        - Numeric feature values (0 = not used)
+        - Suspensao: SIM or NÃO
+        """
+    )
 
 
 # ── Diagnostic plots ───────────────────────────────────────────────────
@@ -162,40 +241,14 @@ def main() -> None:
     )
 
     with st.sidebar:
-        st.header("Dataset")
+        _render_sidebar_dataset_controls()
 
-        uploaded = st.file_uploader("Upload new CSV", type=["csv"])
-        if uploaded is not None:
-            if st.button("Load uploaded CSV", use_container_width=True):
-                try:
-                    content = uploaded.getvalue()
-                    new_df = pd.read_csv(io.BytesIO(content), encoding="utf-8-sig")
-                    new_model = ReactionSurrogateModel()
-                    new_model._ingest(new_df)
-                    new_model.fit()
-                    st.session_state.model = new_model
-                    st.session_state.last_recommendation = None
-                    st.session_state.last_optimization_meta = None
-                    st.success("New dataset loaded and models retrained.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Failed to load CSV: {exc}")
-
-        st.divider()
+    if st.session_state.model is None:
+        _render_missing_dataset_view()
+        return
 
     model: ReactionSurrogateModel = st.session_state.model
     df = model.to_dataframe()
-
-    with st.sidebar:
-        csv_buffer = io.BytesIO()
-        df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
-        st.download_button(
-            label="Download current dataset",
-            data=csv_buffer.getvalue(),
-            file_name="Formulacoes_updated.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
 
     # ── Dataset ─────────────────────────────────────────────────────
     st.subheader("Current dataset")
