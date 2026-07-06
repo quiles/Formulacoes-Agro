@@ -66,7 +66,7 @@ ALL_COLUMNS = (
 
 HIGH_VALUE_MARKER = -1
 
-DECIMAL_PLACES = 2
+DECIMAL_PLACES = 3
 
 NUMERIC_STORAGE_COLUMNS = FEATURE_COLUMNS + TARGET_COLUMNS
 
@@ -74,13 +74,13 @@ DEFAULT_TARGETS = {"Viscosidade": 233.88, "Escoamento": 0.2}
 
 DEFAULT_CSV = Path(__file__).parent / "data" / "Formulacoes.csv"
 
-DEFAULT_GPR_KERNEL = "matern"
-DEFAULT_GPC_KERNEL = "rbf"
+DEFAULT_GPR_KERNEL = "linear"
+DEFAULT_GPC_KERNEL = "linear"
 
 KERNEL_OPTIONS: dict[str, str] = {
-    "matern": "Matérn (ν=2.5) — default GPR",
-    "rbf": "RBF (Gaussian) — default GPC",
-    "linear": "Linear (DotProduct)",
+    "linear": "Linear (DotProduct) — default",
+    "matern": "Matérn (ν=2.5)",
+    "rbf": "RBF (Gaussian)",
     "matern15": "Matérn (ν=1.5)",
     "matern05": "Matérn (ν=0.5)",
     "rational_quadratic": "Rational Quadratic",
